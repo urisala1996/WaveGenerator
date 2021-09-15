@@ -1,0 +1,16 @@
+main.c:100:6:compute_sinewave	16	static
+main.c:106:7:ADC_map	48	static
+main.c:119:6:compute_ADC_map	48	static
+main.c:142:10:average	24	static
+main.c:152:9:steady_signal	16	static
+main.c:172:5:main	16560	static
+main.c:299:6:SystemClock_Config	96	static
+main.c:348:13:MX_ADC1_Init	48	static
+main.c:412:13:MX_DAC1_Init	48	static
+main.c:453:13:MX_TIM2_Init	40	static
+main.c:498:13:MX_USART2_UART_Init	8	static
+main.c:531:13:MX_DMA_Init	16	static
+main.c:552:13:MX_GPIO_Init	32	static
+main.c:573:6:HAL_ADC_ConvHalfCpltCallback	16	static
+main.c:578:6:HAL_ADC_ConvCpltCallback	16	static
+main.c:606:6:Error_Handler	4	static,ignoring_inline_asm
