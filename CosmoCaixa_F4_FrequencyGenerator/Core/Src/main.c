@@ -24,6 +24,8 @@
 /* USER CODE BEGIN Includes */
 #include "MY_CS43L22.h"
 #include "math.h"
+#include  <errno.h>
+#include  <sys/unistd.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,6 +39,24 @@
 
 #define F_SAMPLE 	50000.0f
 #define F_OUT 		1000.0f
+
+#define AUDIO_CLK			4000000
+#define STEADY_OFFSET		2
+
+#define N_SAMPLES 			128
+
+#define ADC_RES 			4096
+#define ADC_BUF_LEN 		64
+#define ADC_BUF_HALF_LEN	ADC_BUF_LEN / 2
+
+#define MIN_FREQ			1		//1 Hz
+#define MAX_FREQ			30		//30 Hz
+
+#define LOW_LEVEL			192		//100mV
+#define HIGH_LEVEL			3170	//9.9 Volts
+
+#define FULL_VOLUME			35
+//#define PRINT_DEBUG 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,7 +65,11 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 DAC_HandleTypeDef hdac;
+DMA_HandleTypeDef hdma_dac1;
 
 I2C_HandleTypeDef hi2c1;
 
@@ -54,7 +78,23 @@ DMA_HandleTypeDef hdma_spi3_tx;
 
 TIM_HandleTypeDef htim2;
 
+UART_HandleTypeDef huart2;
+
 /* USER CODE BEGIN PV */
+
+float 		sinewave_sample;
+float 		sample_dt;
+uint16_t 	sample_N;
+uint16_t	i_t;
+uint32_t	dac_sample;
+int16_t		I2S_data[4];
+
+uint32_t adc_buf[ADC_BUF_LEN];
+uint32_t sinewave[N_SAMPLES];
+HAL_StatusTypeDef ret;
+
+volatile uint8_t ADC_isHalfCplt = 0;
+volatile uint8_t ADC_isCplt = 0;
 
 /* USER CODE END PV */
 
@@ -66,19 +106,83 @@ static void MX_DMA_Init(void);
 static void MX_DAC_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2S3_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+float ADC_map(uint32_t x, uint32_t in_min, uint32_t in_max, uint32_t out_min, uint32_t out_max);
+uint32_t average(uint32_t *arr, uint32_t N);
+void compute_sinewave(void);
+uint8_t steady_signal(uint32_t sample);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-float 		sinewave_sample;
-float 		sample_dt;
-uint16_t 	sample_N;
-uint16_t	i_t;
-uint32_t	dac_sample;
-int16_t		I2S_data[4];
+
+void compute_sinewave(void){
+	for (int i=0; i<N_SAMPLES; i++){
+		sinewave[i] = ((sin(i*2*M_PI/N_SAMPLES) + 1)*(4000/2));
+	}
+}
+
+float ADC_map(uint32_t x, uint32_t in_min, uint32_t in_max, uint32_t out_min, uint32_t out_max) {
+	float in_min_f = (float)in_min;
+	float in_max_f = (float)in_max;
+	float out_min_f = (float)out_min;
+	float out_max_f = (float)out_max;
+	float res = 0;
+
+	res = (x-in_min_f)*(out_max_f-out_min_f)/(in_max_f-in_min_f) + out_min_f;
+
+	return res;
+  //return (uint32_t)(x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+void compute_ADC_map(uint32_t *arr){
+
+	float freq,tim_arr;
+
+	for(int i=0; i < LOW_LEVEL; i++){
+		freq = MIN_FREQ;
+		tim_arr = AUDIO_CLK/(N_SAMPLES*freq);
+		arr[(ADC_RES-1)-i] = (uint32_t)tim_arr;
+	}
+
+	for(int i=LOW_LEVEL; i < HIGH_LEVEL; i++){
+		freq = ADC_map(i, LOW_LEVEL, HIGH_LEVEL, MIN_FREQ, MAX_FREQ);
+		tim_arr = AUDIO_CLK/(N_SAMPLES*freq);
+		arr[(ADC_RES-1)-i] = (uint32_t)tim_arr;
+	}
+
+	for(int i=HIGH_LEVEL; i < ADC_RES; i++){
+		freq = MAX_FREQ;
+		tim_arr = AUDIO_CLK/(N_SAMPLES*freq);
+		arr[(ADC_RES-1)-i] = (uint32_t)tim_arr;
+	}
+}
+
+uint32_t average(uint32_t *arr, uint32_t N){
+
+	int sum = 0;
+	for(int i=0; i<N; i++){
+		sum = sum + arr[i];
+	}
+
+	return sum/N;
+}
+
+uint8_t steady_signal(uint32_t sample){
+
+	static uint32_t last_sample = 0;
+
+	if(sample <= last_sample + STEADY_OFFSET && sample >= last_sample - STEADY_OFFSET){
+		last_sample = sample;
+		return 1;
+	}else{
+		last_sample = sample;
+		return 0;
+	}
+}
 
 /* USER CODE END 0 */
 
@@ -91,6 +195,22 @@ int main(void)
   /* USER CODE BEGIN 1 */
   sample_dt = F_OUT/F_SAMPLE;
   sample_N  = F_SAMPLE/F_OUT;
+
+  uint32_t ADC_meanSample 		= 0;
+  uint32_t ADC_rawSample		= 0;
+  uint32_t ADC_auxBuf[ADC_BUF_HALF_LEN];
+  uint32_t wave_period 		= 0;
+  uint32_t last_wave_period = 0;
+
+  uint32_t ADC_map[ADC_RES];
+
+  uint32_t len = 0;
+
+  int TIM_isStopped = 0;
+  int TIM_onHighFreq = 0;
+
+  int i = 0;
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -116,26 +236,97 @@ int main(void)
   MX_DAC_Init();
   MX_TIM2_Init();
   MX_I2S3_Init();
+  MX_ADC1_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  //HAL_ADCEx_Calibration_Start(&hadc1,ADC_SINGLE_ENDED);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, ADC_BUF_LEN);
+
   CS43_Init(hi2c1, CS43_MODE_ANALOG);
-  CS43_SetVolume(100);
+  CS43_SetVolume(FULL_VOLUME);
   CS43_Enable_RightLeft(CS43_RIGHT_LEFT);
   CS43_Start();
 
   // Dummy data for Clock Enabling
   HAL_I2S_Transmit_DMA(&hi2s3, (uint16_t *)I2S_data, 4);
 
-  //TODO: Change to DMA ?
-  HAL_DAC_Start(&hdac, DAC1_CHANNEL_1);
+  //HAL_TIM_Base_Start_IT(&htim2);
+  HAL_TIM_Base_Start(&htim2);
 
-  HAL_TIM_Base_Start_IT(&htim2);
+  compute_sinewave();
+  compute_ADC_map(ADC_map);
+
+  //HAL_DAC_Start(&hdac, DAC1_CHANNEL_1);
+  HAL_DAC_Start_DMA(&hdac, DAC1_CHANNEL_1, sinewave, N_SAMPLES, DAC_ALIGN_12B_R); //DAC_ALIGN_12B_R
+
+
+  HAL_Delay(10);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
+	  /*
+	   * 	COMPUTE MEAN OF ADC SAMPLES
+	   */
+
+	  if(ADC_isHalfCplt){
+
+		  for(i=0; i<ADC_BUF_HALF_LEN; i++){
+			  ADC_auxBuf[i] = adc_buf[i];
+		  }
+		  ADC_meanSample = average(ADC_auxBuf,ADC_BUF_HALF_LEN);
+		  ADC_isHalfCplt = 0;
+	  }
+
+	  if(ADC_isCplt){
+
+		  for(i=0; i<ADC_BUF_HALF_LEN; i++){
+			  ADC_auxBuf[i] = adc_buf[ADC_BUF_HALF_LEN + i];
+		  }
+		  ADC_meanSample = average(ADC_auxBuf,ADC_BUF_HALF_LEN);
+		  ADC_isCplt = 0;
+	  }
+
+	  /*
+	   * 	CONVERT SAMPLE TO PERIOD
+	   */
+
+	  if(ADC_meanSample > LOW_LEVEL){
+
+		  //Check if we come from a '0 Hz state'
+		  if(TIM_isStopped){
+			  //HAL_DAC_Start_DMA(&hdac, DAC1_CHANNEL_1, sinewave, N_SAMPLES, DAC_ALIGN_12B_R);
+			  //CS43_Headphones_Mute(CS43_NO_MUTE);
+			  CS43_Start();
+			  TIM_isStopped = 0;
+		  }
+
+		  //Convert Sample to Period Value
+		  wave_period = ADC_map[ADC_RES - ADC_meanSample];
+#ifdef PRINT_DEBUG
+		  printf("ADC: %ld\tPERIOD: %ld\r\n",ADC_meanSample,wave_period);
+#endif
+		  //Change Timer Period
+		  if(!steady_signal(ADC_meanSample)){
+			  htim2.Instance->ARR = (uint32_t)(wave_period - 1);
+			  htim2.Instance->EGR = TIM_EGR_UG;
+		  }
+
+	  }else if(ADC_meanSample <= LOW_LEVEL && TIM_isStopped == 0){
+
+		  //Disable Timer (0Hz)
+		  //HAL_DAC_Stop_DMA(&hdac, DAC1_CHANNEL_1);
+		  //CS43_Headphones_Mute(CS43_MUTE);
+		  CS43_Stop();
+		  TIM_isStopped = 1;
+	  }
+
+	HAL_Delay(5);
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -187,6 +378,56 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
   * @brief DAC Initialization Function
   * @param None
   * @retval None
@@ -212,7 +453,7 @@ static void MX_DAC_Init(void)
   }
   /** DAC channel OUT1 config
   */
-  sConfig.DAC_Trigger = DAC_TRIGGER_NONE;
+  sConfig.DAC_Trigger = DAC_TRIGGER_T2_TRGO;
   sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
   if (HAL_DAC_ConfigChannel(&hdac, &sConfig, DAC_CHANNEL_1) != HAL_OK)
   {
@@ -311,7 +552,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 84-1;
+  htim2.Init.Prescaler = 21-1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 20-1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -338,6 +579,39 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
@@ -345,11 +619,18 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
   /* DMA1_Stream5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA1_Stream7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream7_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream7_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
 
@@ -400,20 +681,47 @@ static void MX_GPIO_Init(void)
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
-	UNUSED(htim);
-	if(htim->Instance == TIM2)
-	{
-		sinewave_sample = sinf(i_t * 2 * PI * sample_dt);
-
-		dac_sample = (sinewave_sample + 1)*127;
-		HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_8B_R, dac_sample);
-
-		i_t++;
-		if(i_t >= sample_N) i_t = 0;
-	}
+//	UNUSED(htim);
+//	if(htim->Instance == TIM2)
+//	{
+//		sinewave_sample = sinf(i_t * 2 * PI * sample_dt);
+//
+//		dac_sample = (sinewave_sample + 1)*127;
+//		HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_8B_R, dac_sample);
+//
+//		i_t++;
+//		if(i_t >= sample_N) i_t = 0;
+//	}
 
 }
 
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
+
+	ADC_isHalfCplt = 1;
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
+
+	ADC_isCplt = 1;
+}
+
+#ifdef PRINT_DEBUG
+int _write(int file, char *data, int len)
+{
+   if ((file != STDOUT_FILENO) && (file != STDERR_FILENO))
+   {
+      errno = EBADF;
+      return -1;
+   }
+
+   // arbitrary timeout 1000
+   HAL_StatusTypeDef status =
+      HAL_UART_Transmit(&huart2, (uint8_t*)data, len, 1000);
+
+   // return # of bytes written - as best we can tell
+   return (status == HAL_OK ? len : 0);
+}
+#endif
 
 /* USER CODE END 4 */
 

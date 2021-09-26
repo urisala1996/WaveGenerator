@@ -93,6 +93,8 @@ void CS43_Init(I2C_HandleTypeDef i2c_handle, CS43_MODE outputMode)
 		iData[1] &= ~(1 << 5);   // Unmute passthrough on AIN-A
 		iData[1] &= ~(1 << 4);   // Unmute passthrough on AIN-B
 		iData[1] &= ~(1 << 3);   // Changed settings take affect immediately
+		iData[1] &= ~(1 << 1);   // No Soft Ramp on Volume changes
+		iData[1] |=  (1 << 0);   // Enable Digital Zero Cross
 	}
 	else if(outputMode == CS43_MODE_I2S)
 	{
@@ -186,6 +188,24 @@ void CS43_Stop(void)
 {
 	iData[1] = 0x01;
 	write_register(POWER_CONTROL1,&iData[1]);
+}
+
+void CS43_Headphones_Mute(uint8_t mute)
+{
+	read_register(PLAYBACK_CONTROL_1, &iData[1]);
+
+	if(mute == CS43_MUTE)
+	{
+		iData[1] =  (1 << 0);
+		iData[1] =  (1 << 1);
+	}
+	else if(mute == CS43_NO_MUTE)
+	{
+		iData[1] &= ~(1 << 0);
+		iData[1] &= ~(1 << 1);
+	}
+	write_register(PLAYBACK_CONTROL_1,&iData[1]);
+
 }
 
 

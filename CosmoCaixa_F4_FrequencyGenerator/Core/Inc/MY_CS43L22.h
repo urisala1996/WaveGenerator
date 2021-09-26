@@ -29,11 +29,13 @@ References:
 #define PASSTHROUGH_A					0x08
 #define PASSTHROUGH_B					0x09
 #define MISCELLANEOUS_CONTRLS			0x0E
+#define PLAYBACK_CONTROL_1				0x0D
 #define PLAYBACK_CONTROL				0x0F
 #define PASSTHROUGH_VOLUME_A			0x14
 #define PASSTHROUGH_VOLUME_B			0x15
 #define PCM_VOLUME_A					0x1A
 #define PCM_VOLUME_B					0x1B
+#define BEEP_TONE_CONFIG				0x1E
 #define CONFIG_00						0x00
 #define CONFIG_47						0x47
 #define CONFIG_32						0x32
@@ -43,7 +45,8 @@ References:
 
 #define DAC_I2C_ADDR 					0x94
 
-#define CS43_MUTE				 		0x00
+#define CS43_MUTE				 		0x01
+#define CS43_NO_MUTE				 	0x00
 
 #define CS43_RIGHT						0x01
 #define CS43_LEFT				 		0x02
@@ -68,5 +71,6 @@ static void read_register(uint8_t reg, uint8_t *data);
 void CS43_Init(I2C_HandleTypeDef i2c_handle, CS43_MODE outputMode);
 void CS43_Enable_RightLeft(uint8_t side);
 void CS43_SetVolume(uint8_t volume);
+void CS43_Headphones_Mute(uint8_t mute);
 void CS43_Start(void);
 void CS43_Stop(void);
