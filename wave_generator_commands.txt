@@ -1,0 +1,61 @@
+a  - get device id. response e.g. FY3206S\n
+cf - query main channel freq. respose e.g. cf0000000050
+cd - get main duty cycle - cd500
+df - set secondary frequency e.g. df0001100000
+
+bf - set main channel frequency e.g. bf0001100000
+da - set secondary amplitude da08.00
+
+do - set secondary bias e.g. do02.1
+bd - set main duty cycle e.g. bd668
+dp - set secondary skew e.g. dp039
+tn - set trigger cycles e.g tn0001000
+ce - get counter frequency response e.g. ce0000000000
+cc - get counter count repsonse e.g. cc0000000000
+bc - clear counter
+tt0 - trigger manually
+tt2 - trigger channel 2
+tt1 - trigger external
+br0 - stop sweep
+br1 - start sweep
+br1.bf - set start frequency in cHz, e.g. br1\nbf600000000
+bs1.bf - set stop frequency in cHZ, e.g. bs1\nbf600000000
+bt  - set sweeo time in sec 1-99, e.g. bt99
+ct - get sweep time xx e.g. ct10
+
+bs2.bt  - set sweep time in sec 1-99, e.g. bs2\nbt99
+bm1 - linear sweep
+bm2 - log sweep
+
+bs - save settings in register nn e.g. bs00
+bl - load settings from register nn e.g. bl00
+
+
+Wave uploads
+DDS_WAVE\0xa5 - initialized, response should be 'F'
+DDS_WAVE\0xfx - erase memory n e.g. DDS_WAVE\0xf1 selects wf memory 1, response 'SE'
+DDS_WAVE\0x0x - (e.g.DDS_WAVE\0x03 - upload data to memory x, response should be 'W'. After that 2048 bytes should be sent high byte first.You need about 5 ms between each byte to avoid buffer overruns
+
+
+Wave form selection
+dw0 - set secondary wave sine
+dw1 - set secondary wave square
+dw2 - set secondary wave triangle
+dw3 - set secondary wave arbitrary 1
+dw4 - set secondary wave arbitrary 2
+dw5 - set secondary wave arbitrary 3
+dw6 - set secondary wave arbitrary 4
+dw7 - set secondary wave lorentz pulse
+dw8 - set secondary wave Multi tone
+dw9 - set secondary wave Periodic random noise
+dw10 - set secondary wave ECG
+dw11 - set secondary wave trapezodial pulse
+dw12 - set secondary wave Sinc pulse
+dw13 - set secondary wave Narrow pulse
+dw14 - set secondary wave Gauss white noise
+dw15 - set secondary wave AM
+dw16 - set secondary wave FM
+
+d set secondary
+c get main
+b set main
